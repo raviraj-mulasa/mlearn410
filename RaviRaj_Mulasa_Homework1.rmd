@@ -1,0 +1,257 @@
+---
+title: "Homework 1 - RaviRaj Mulasa"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+# Supervised Learning
+Necessary packages
+```{r}
+library(caret)
+library(e1071)
+library(foreach)
+require(ggplot2)
+```
+
+
+# Misc Metric Questions
+
+## Q1: Generalize the entropy function from the slides
+Modify the information entropy function to  accept multinomial probabilities (as a list, etc.), rather than just inferring a binary probability.
+```{r}
+# e.g., here's the old eta function from the slides that calculates entropy assuming a binary distribution:
+eta = function(multi_prob_list) {
+  if(!is.null(multi_prob_list) & length(multi_prob_list) > 0) {
+    n = length(multi_prob_list)
+    if(1 == n) {
+      multi_prob_list[[length(multi_prob_list) + 1L]] = 1.0 - multi_prob_list[[1]]
+    }
+    return (-1.0 * foreach(prob = multi_prob_list, .combine='+') %do%  { prob * log2(prob) })
+  }
+}
+# e.g. after rewriting something like this should succeed:
+eta(list(.1, .2, .4, .3))
+eta(list(0.11002, 0.88998))
+eta(list(0.11002))
+eta(NULL)
+eta(list())
+```
+
+## Q2: Write a function to produce an ROC curve (true positive rate and false positive rate)
+```{r}
+roc = function(pred, dat){
+  # Order precictions in descending order, rearrange the data with those index
+  dat <- dat[order(pred, decreasing=TRUE)]
+  # Calculate Cumulative FPR and TPR values once ordered
+  return (data.frame(FPR=cumsum(!dat)/sum(!dat),TPR=cumsum(dat)/sum(dat)))
+}
+# e.g.
+pred = c(.1, .2, .9, .8)
+dat = c(1, 0, 0, 1, 1, 1)
+roc_df = roc(pred, dat)
+plot(roc_df, main="ROC Curve - Test", col="red", lwd=1)
+```
+
+## Q3: Use the roc curve function to calculate a AUC metric
+```{r}
+auc = function(roc_df){
+  tpr_vector = as.vector(roc_df$TPR)
+  fpr_vector = as.vector(roc_df$FPR)
+  height = (tpr_vector[-1]+tpr_vector[-length(tpr_vector)])/2
+  width = diff(fpr_vector)
+  sum(height*width)
+}
+# e.g.
+auc(roc_df)
+```
+
+# Data Processing Questions
+##  Read in the titanic csv and analyze it (e.g. plot interesting fields you find with boxplots, scatterplots, etc.)
+### Think about whether the it makes sense to include a column based on what it is.
+
+The "Titanic" dataset is a passenger manifest that also includes a "survived" field, indicating whether the individual survived the trip.
+We're interested in whether we can predict whether a passenger survived, based solely on the information we knew about them *before* they boarded the ship.
+
+```{r}
+titanic = read.csv("https://jdonaldson.github.io/uw-mlearn410/homework/titanic3.csv")
+head(titanic)
+
+```
+
+Use the plots to answer the following questions: 
+
+## Q4: Which fields seem to be important for predicting survival? 
+```{r}
+library(ggplot2)
+pairs(titanic)
+```
+
+## Q5: Which fields are leakage? 
+## ANS: sex
+
+## Q6: Which fields look like noise?
+## ANS: boat, body, home.dest and cabin
+
+
+## Q7: Extract the titles from the ``name`` field 
+The ``name`` field contains some useful demographic information.  Use `strsplit` and look at the counts of each unique title. 
+These should be values like "Mr.", "Mrs.", etc. If there are some that are very low, decide what to do with them - you can create a manual ontology and rename them, create an "Other" class, or drop those rows. Keep in mind - if you drop `null` rows during training, tell us what to do with them while testing/running in production.
+```{r}
+#modify titanic dataset here
+titanic$name <- tolower(titanic$name)
+#titanic$title = trimws(unlist(strsplit(unlist(strsplit(titanic$name, ",")), "[.]"))[2])
+titanic$title <- gsub('(.*, )|(\\..*)', '', titanic$name)
+other_titles <- c('capt', 'col',  'don', 'dona', 'dr', 'jonkheer','lady', 'major', 'rev', 'sir', 'the countess')
+titanic$title[titanic$title %in% other_titles]  <- 'others'
+titanic$title[titanic$title == 'mlle']        <- 'miss' 
+titanic$title[titanic$title == 'ms']          <- 'miss'
+titanic$title[titanic$title == 'mme']         <- 'mrs' 
+table(titanic$sex, titanic$title)
+```
+
+
+## Q8: Deal with NA values
+Let's deal with imputing (filling-in) `NAs` and missing values in `age` and `embarked`:
+`age` is numeric, so we can replace it with the mean of all the non-null ages. `embarked` is categorical, so let's just replace it with the most frequent port of embarkation.
+## Q10: Convert all the categorical variables into appropriate factors.
+Example: What's the deal with `pclass`? Is it categorical?<br>
+## ANS:Yes, ordinal (categoriacal) data - ticket class
+```{r}
+# modify titanic dataset here.
+
+#Remove cabin, home.dest, ticket, body and boat
+dropped_cols <- c("cabin","home.dest", "ticket", "boat", "body", "name")
+titanic[ , dropped_cols] <- list(NULL)
+
+
+# create a feature 'family'
+titanic$family = as.factor(titanic$parch > 0 | titanic$sibsp > 0)
+
+factor_vars <- c('pclass','sex','embarked', 'title', 'family')
+titanic[factor_vars] <- lapply(titanic[factor_vars], function(x) as.factor(x))
+titanic$sex <- factor(titanic$sex, levels = c("male","female"), labels = c(0,1))
+titanic$title = factor(titanic$title, levels = c("master","miss", "mr", "mrs", "others"), labels = c(0,1,2,3,4))
+titanic$family <- factor(titanic$family, levels = c("FALSE","TRUE"), labels = c(0,1))
+titanic$embarked <- factor(titanic$embarked, levels = c("C", "Q", "S"), labels = c(1,2,3))
+
+# Impute mean age
+mean_age <- mean(titanic$age[!is.na(titanic$age)])
+titanic$age[is.na(titanic$age)] <- mean_age
+
+# Impute mode embarked
+titanic$embarked[is.na(titanic$embarked)] <- "S"
+
+colSums(is.na(titanic))
+#Remove data whose value(s) is(are) NA
+titanic=na.omit(titanic)
+colSums(is.na(titanic))
+
+
+head(titanic, n = 10L)
+```
+
+## Q9: What assumptions are we implicitly making by using these methods of imputation?
+## ANS: By using mean impuattion, we are assuming data is not skewed.
+
+
+
+
+## Q11: Create a sampling function that splits the titanic dataset into 75% train, 25% test dataframe.
+
+```{r}
+## perform train-test split
+datasplit = function(dataset, split_ratio){
+  split <- list()
+  
+  ## set the seed to make your partition reproductible
+  set.seed(123)
+  smp_size <- floor(split_ratio * nrow(dataset))
+  train_ind <- sample(seq_len(nrow(dataset)), size = smp_size)
+  
+  split$train <- dataset[train_ind, ]
+  split$test <- dataset[-train_ind, ]
+
+  return(split)
+}
+# 75% of the sample size
+titanic_split = datasplit(titanic, .75)
+```
+
+# Modeling Questions
+## Q12: Is accuracy a good metric for evaluating this model? If so, what is the "chance" level for this dataset?
+## ANS: No, accuracy - percentage of correct predictions (true positives) is NOT a good meteric, this metric does not consider true negative(s) and false positive(s).
+
+## Q13: Use caret/rpart to train a decision tree on the test dataset.
+
+```{r}
+# e.g., use your train data from the split.  Fill in the proper fields in "?"
+library(rpart.plot)
+library(RColorBrewer)
+formula = survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title + family
+dtree_titanic_train <- rpart(formula, data = titanic_split$train, method = "class")
+summary(dtree_titanic_train)
+```
+
+## Q14: Use caret/rf to train a random forest on the test dataset. 
+
+```{r}
+# e.g., use your train data:
+library(randomForest)
+rf_titanic_train <- randomForest(formula,
+                      data=as.data.frame(titanic_split$train), 
+                      importance=TRUE, type="classification",
+                      ntree=2000)
+summary(rf_titanic_train)
+```
+
+## Q15: Use caret/glm to train a logistic model on the test dataset
+
+```{r}
+# e.g., use your train data:
+library(glm2)
+lmm_titanic_train <- glm(formula,family=binomial(link='logit'),data=titanic_split$train)
+summary(lmm_titanic_train)
+```
+
+
+## Q16: Gather predictions from your models on the test dataset
+```{r}
+dtree_titanic_test_pred = predict(dtree_titanic_train, newdata = titanic_split$test)
+head(dtree_titanic_test_pred)
+rf_titanic_test_pred = predict(rf_titanic_train, newdata = titanic_split$test)
+head(rf_titanic_test_pred)
+lmm_titanic_test_pred = predict(lmm_titanic_train, newdata = titanic_split$test)
+head(lmm_titanic_test_pred)
+head(titanic_split$test$survived)
+```
+
+## Q17: Use your roc/auc functions to plot and compare your models' performance 
+```{r}
+#e.g
+roc_dtree = roc(as.vector(dtree_titanic_test_pred[,c("1")]), as.vector(titanic_split$test$survived))
+paste0("AUC - Decision Tree: ",auc(roc_dtree))
+plot(roc_dtree, col="red", lwd=1, main="ROC Curve - Decision Tree")
+abline(0,1, col="black", lty=2)
+
+roc_rf = roc(as.vector(rf_titanic_test_pred), as.vector(titanic_split$test$survived))
+paste0("AUC - Random Forest: ", auc(roc_rf))
+plot(roc_rf, col="red", lwd=1, main="ROC Curve - Random Forest")
+abline(0,1, col="black", lty=2)
+
+roc_lmm = roc(as.vector(lmm_titanic_test_pred), as.vector(titanic_split$test$survived))
+paste0("AUC - Logistic Model: ",auc(roc_lmm))
+plot(roc_lmm, col="red", lwd=1, main="ROC curve - Logistic model")
+abline(0,1, col="black", lty=2)
+# auc(roc(tm_eval, split$test$survived))
+```
+
+## Q17: Which model performed the best and why do you think it did better?
+## ANS: Random Forest performed the best as AUC is the greatest among all the models tried.
+
+# Closing Notes/Follow-up
+Consider submitting your responses to Kaggle and see how you did! 
+https://www.kaggle.com/c/titanic
+
+
