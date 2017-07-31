@@ -1,0 +1,179 @@
+---
+title: "RaviRaj_Mulasa_Final_project"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(PerfMeas)
+library(dplyr)
+library(tidyr)
+library(PRROC)
+library(randomForest)
+library(ggplot2)
+library(corrplot)
+library(caret)
+library(e1071)
+library(unbalanced)
+```
+
+## Load data
+
+```{r credit_card, echo=TRUE}
+credit_card = read.csv("/Users/ravirajmulasa/Downloads/creditcard.csv", header = TRUE)
+head(credit_card, n=10L)
+colSums(is.na(credit_card))
+```
+
+## Imbalanced Data 
+```{r credit_card_imbalanced_class, echo=TRUE}
+credit_card_corr <- cor(credit_card)
+corrplot(credit_card_corr, type="lower")
+credit_card$Class = as.factor(credit_card$Class)
+prop.table(table(credit_card$Class))
+ggplot(credit_card, aes(x=Class)) +
+  geom_bar(alpha=0.7, colour="#0072B2")
+```
+## DATA PREPARATION:
+### Separate fraudulent and non-fraudulent data, 
+```{r credit_card_plots, echo=TRUE}
+dropped_cols <- c("Time")
+credit_card[ , dropped_cols] <- list(NULL)
+credit_card_frauds  = filter(credit_card,credit_card$Class == 1)
+head(credit_card_frauds, n=10L)
+credit_card_non_frauds  = filter(credit_card,credit_card$Class == 0)
+head(credit_card_non_frauds, n=10L)
+```
+
+### Create train and test data - 75% AND 25%  
+```{r credit_card_train_test_split, echo=TRUE}
+credit_card$Amount <- scale(as.vector(credit_card$Amount))
+credit_card$Amount = as.numeric(credit_card$Amount)
+set.seed(3456)
+train_index <- createDataPartition(credit_card$Class, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+class(train_index)
+length(train_index)
+nrow(credit_card)
+
+credit_card_split <- list()
+credit_card_split$train <- credit_card[train_index, ]
+credit_card_split$test  <- credit_card[-train_index, ]
+head(credit_card_split$train)
+head(credit_card_split$test)
+
+prop.table(table(credit_card_split$train$Class))
+prop.table(table(credit_card_split$test$Class))
+```
+### SMOTE 
+```{r SMOTE, echo=TRUE}
+library(DMwR)
+credit_card_somte_train <- cbind(credit_card_split$train)
+credit_card_somte_train <- DMwR::SMOTE(Class ~ ., credit_card_somte_train, perc.over = 100, perc.under=200)
+prop.table(table(credit_card_split$train$Class))
+prop.table(table(credit_card_somte_train$Class))
+```
+
+### ROSE 
+```{r ROSE, echo=TRUE}
+library(ROSE)
+credit_card_rose_train <- cbind(credit_card_split$train)
+credit_card_rose_train <- ROSE::ROSE(Class ~ ., data=credit_card_rose_train,  seed = 1)$data
+prop.table(table(credit_card_split$train$Class))
+prop.table(table(credit_card_rose_train$Class))
+```
+## Run RandomForest with SMOTE
+```{r random_forest_smort, echo=TRUE}
+predictors = paste(names(credit_card)[names(credit_card) != 'Class'], collapse = "+")
+model_formula = paste("Class", predictors, sep="~")
+rf_titanic_train <- randomForest(formula(model_formula),
+                      data=credit_card_somte_train,
+                      importance=TRUE, type="classification",
+                      ntree=25)
+summary(rf_titanic_train)
+rf_credit_card_fraud_preds = predict(rf_titanic_train, newdata = credit_card_split$test)
+head(rf_credit_card_fraud_preds)
+#Confusion Matrix
+confusionMatrix(table(rf_credit_card_fraud_preds, credit_card_split$test$Class))
+fg <- rf_credit_card_fraud_preds[credit_card_split$test$Class == 1]
+bg <- rf_credit_card_fraud_preds[credit_card_split$test$Class == 0]
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(pr)
+```
+## Run RandomForest with ROSE
+```{r random_forest_rose, echo=TRUE}
+rf_titanic_train_1 <- randomForest(formula(model_formula),
+                      data=credit_card_rose_train,
+                      importance=TRUE, type="classification",
+                      ntree=25)
+summary(rf_titanic_train_1)
+rf_credit_card_fraud_preds = predict(rf_titanic_train_1, newdata = credit_card_split$test)
+head(rf_credit_card_fraud_preds)
+#Confusion Matrix
+confusionMatrix(table(rf_credit_card_fraud_preds, credit_card_split$test$Class))
+fg <- rf_credit_card_fraud_preds[credit_card_split$test$Class == 1]
+bg <- rf_credit_card_fraud_preds[credit_card_split$test$Class == 0]
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(pr)
+```
+## Run Gradeint Boosting with SMOTE
+```{r xgboost_smote, echo=TRUE}
+library(xgboost)
+bst<- xgboost(data = as.matrix(credit_card_somte_train[, -ncol(credit_card_somte_train)])
+                      , label = as.numeric(as.character(credit_card_somte_train$Class))
+                      , max_depth = 2
+                      , eta = 1
+                      , nthread = 2
+                      , nrounds = 2
+                      , objective = "binary:logistic"
+)
+summary(bst)
+
+credit_card_test_smote = cbind(credit_card_split$test)
+credit_card_test_smote$Class = as.numeric(as.character(credit_card_test_smote$Class))
+rf_credit_card_fraud_preds = predict(bst, newdata = as.matrix(credit_card_test_smote))
+head(rf_credit_card_fraud_preds)
+length(rf_credit_card_fraud_preds)
+nrow(credit_card_test_smote)
+#Confusion Matrix
+credit_card_test_smote$Class = as.factor(credit_card_test_smote$Class)
+#confusionMatrix(rf_credit_card_fraud_preds, credit_card_test_smote$Class)
+fg <- rf_credit_card_fraud_preds[credit_card_test_smote$Class == 1]
+bg <- rf_credit_card_fraud_preds[credit_card_test_smote$Class == 0]
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(pr)
+```
+## Run Gradeint Boosting with ROSE
+```{r xgboost_rose, echo=TRUE}
+bst_rose<- xgboost(data = as.matrix(credit_card_rose_train[, -ncol(credit_card_rose_train)])
+                      , label = as.numeric(as.character(credit_card_rose_train$Class))
+                      , max_depth = 2
+                      , eta = 1
+                      , nthread = 2
+                      , nrounds = 2
+                      , objective = "binary:logistic"
+)
+summary(bst_rose)
+
+credit_card_test_rose = cbind(credit_card_split$test)
+credit_card_test_rose$Class = as.numeric(as.character(credit_card_test_rose$Class))
+rf_credit_card_fraud_preds = predict(bst_rose, newdata = as.matrix(credit_card_test_rose))
+head(rf_credit_card_fraud_preds)
+length(rf_credit_card_fraud_preds)
+nrow(credit_card_test_rose)
+#Confusion Matrix
+
+credit_card_test_rose$Class = as.factor(credit_card_test_rose$Class)
+#confusionMatrix(rf_credit_card_fraud_preds, credit_card_test_smote$Class)
+fg <- rf_credit_card_fraud_preds[credit_card_test_rose$Class == 1]
+bg <- rf_credit_card_fraud_preds[credit_card_test_rose$Class == 0]
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(pr)
+```
