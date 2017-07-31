@@ -1,0 +1,402 @@
+---
+title: "Homework 2 - RaviRaj Mulasa"
+output:
+  html_document: default
+  html_notebook: default
+---
+```{r, include=F}
+require(tm)
+require(dplyr)
+require(tidyr)
+require(ggplot2)
+require(NMF)
+require(topicmodels)
+require(ROCR)
+require(GGally)
+require(EMCluster)
+require(ggplot2)
+require(pander)
+require(foreach)
+```
+
+# Unsupervised Learning
+
+## Find model parameters using EM 
+The dataset below contains eruption data from old faithful.  
+Analysts note that old faithful erupts in certain patterns: Sometimes there are long eruptions, sometimes there are short.
+The eruptions are also followed by a delay that can vary accordingly.
+
+Read in the data to get started.
+
+
+```{r}
+data(faithful)
+# investigate the old faithful eruption patterns using scatter plots, etc.  
+plot(faithful,lty = "solid", lwd = 1)
+ggplot2::qplot(faithful$eruptions,
+      geom="histogram",
+      binwidth = 0.1,  
+      main = "Histogram for Eruptions", 
+      xlab = "Eruptions",  
+      fill=I("blue"), 
+      col=I("red"), 
+      alpha=I(.5),
+      xlim=c(1,5))
+
+ggplot2::qplot(faithful$waiting,
+      geom="histogram",
+      binwidth = 1.2,  
+      main = "Histogram for Waiting", 
+      xlab = "waiting",  
+      fill=I("blue"), 
+      col=I("red"), 
+      alpha=I(.5),
+      xlim=c(40,100))
+```
+
+### Q1: How many clusters do you believe exist?
+### ANS: 2 to 3 Clusters
+
+### Q2: How did you arrive at your conclusion?
+### ANS: Draw a vertical line, there are 2 densly populated region of data points and 1 sparsely populated region of data points at the middle
+
+### Q3 : Use Expectation Maximization clustering 
+Extract cluster parameters using your chosen``k`` cluster count  and report them below
+```{r}
+require(EMCluster)
+require(RColorBrewer)
+sem = shortemcluster(as.matrix(faithful), simple.init(faithful, nclass = 3))
+em = emcluster(faithful, sem, assign.class=T)
+em$Mu
+colors = brewer.pal(3, "Spectral")[em$class]
+faithful$class = colors
+ggplot2::ggplot(data = faithful, aes(x=faithful$eruptions, fill=class)) + geom_histogram(position="dodge")
+
+```
+
+
+### Q4: Use dbscan to perform clustering.  
+
+```{r}
+library(dbscan)
+dropped_cols <- c("class")
+faithful[ , dropped_cols] <- list(NULL)
+dbscan::kNNdistplot(faithful, k = 15)
+abline(h=3, col = "red", lty=2)
+res <- dbscan(faithful, eps = 3, minPts=15)
+res
+plot(faithful, col = res$cluster + 1L, pch = res$cluster + 1L)
+hullplot(faithful, res)
+
+kNNdistplot(faithful, k = 5)
+abline(h=2, col = "red", lty=2)
+res <- dbscan(faithful, eps = 2, minPts=5)
+res
+plot(faithful, col = res$cluster + 1L, pch = res$cluster + 1L)
+hullplot(faithful, res)
+
+```
+Report the settings you chose for minPts and epsilon, and how you arrived at them (hint: histograms and distances)
+### SETTINGS: eps = 2, minPts = 5 , used knnDistance to compute the knee distance, no.of clusters k = 3
+
+### Q5: Use kmeans to perform clustering
+Use the k you chose before
+```{r}
+# kmeans(faithful, k) should already be available in your R environment
+set.seed(20)
+k_3_means_cluster <- kmeans(faithful, 3)
+plot(faithful, col = k_3_means_cluster$cluster + 1L, pch = k_3_means_cluster$cluster + 1L)
+hullplot(faithful, k_3_means_cluster)
+```
+
+### Q6 : Which clustering technique works the best here?
+### ANS: DBSCAN works better for the following reasons
+####      1. We have better seperation between clusters
+####      2. We can tune eps and minPts to determine the no.of clusters. k-means where k shpuld predetermined.
+####      3. We can also find outliers i.e; noise
+
+## Topic Modeling
+
+In this problem, you will use a topic model as part of a supervised learning pipeline. We will use the New York Times articles that we looked at in class.
+
+```{r}
+articles <- read.csv('/Users/ravirajmulasa/Documents/Certificate_in_MachineLearning/Applied_Machine_Learning/uw-mlearn410/docs/datasets/nyt_articles.csv', stringsAsFactors = F)
+colnames(articles)[1]='No'
+no_of_articles = nrow(articles)
+```
+
+### Q7: Define a target. For this problem, let's try to predict whether or not an article appears in the "Sports" section.
+
+```{r}
+sort(table(articles$section_name),decreasing = TRUE)
+all_sports_articles =  filter(articles,articles$section_name == 'Sports')
+target_sports_article = sample_n(all_sports_articles, 1)
+print(target_sports_article$No)
+```
+
+
+### Q8: Split your data into three segments: Train_1, Train_2, Test
+
+```{r}
+#Split - 60%, 20%, 20%
+spec = c(train_1 = 0.60, train_2 = 0.20, test = 0.20)
+split_cut = cut(seq(no_of_articles), no_of_articles*cumsum(c(0,spec)), labels = names(spec))
+g = sample(split_cut)
+articles_split = split.data.frame(articles, g)
+sapply(articles_split, nrow)/no_of_articles
+```
+
+
+### Q9: Use the train_1 dataset to build an LDA topic model of the article content.
+
+You get to decide how many topics to find, and what other parameters you would like to play with. You may want to use some of the functions we defined during class for examining topics.
+
+```{r}
+corp_train_1 <- SimpleCorpus(VectorSource(articles_split$train_1$content)) %>%
+  tm_map(stripWhitespace) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removeWords, stopwords('english')) %>%
+  tm_map(stemDocument)
+dtm_train_1 = DocumentTermMatrix(corp_train_1, control = list(weight='weightTfidf', bounds = list(global = c(20, 100))))
+dim(dtm_train_1)
+#Terms(dtm_train_1)
+
+# Remove documents that don't contain any of these words.
+idx <- apply(dtm_train_1, 1, sum) >= 1
+articles_split$train_1 <- articles_split$train_1[idx, ]
+dtm_train_1 <- dtm_train_1[idx, ]
+
+#dtm_train_1
+no_of_topics = 9 
+lda_out <- topicmodels::LDA(dtm_train_1, k=no_of_topics)
+topic_mat_train_1 <- topicmodels::posterior(lda_out)[["topics"]]
+dim(lda_out@gamma)
+dim(lda_out@beta)
+#head(topic_mat_train_1)
+#topics(lda_out)
+#terms(lda_out,10)
+
+pltdf <- data.frame(section = articles_split$train_1$section_name, lda_out@gamma)
+head(pltdf)
+
+p <- ggplot(pltdf, aes(x=X1, y=X2, color=section)) +
+  geom_point() +
+  theme_bw()
+print(p)
+
+p <- ggplot(pltdf, aes(x=X2, y=X3, color=section)) +
+  geom_point() +
+  theme_bw()
+print(p)
+
+p <- ggplot(pltdf, aes(x=X7, y=X8, color=section)) +
+  geom_point() +
+  theme_bw()
+print(p)
+
+p <- ggplot(pltdf, aes(x=X8, y=X9, color=section)) +
+  geom_point() +
+  theme_bw()
+print(p)
+```
+
+```{r}
+topic_articles <- function(doc_mat, headlines){
+  agg <- data.frame(doc_mat) %>%
+    mutate(headline = headlines) %>%
+    gather(topic, val, -headline) %>%
+    group_by(topic) %>%
+    arrange(-val) %>%
+    summarise(most_positive = paste(head(headline, 2), collapse=' | '),
+              least_positive = paste(tail(headline, 2), collapse=' | '))
+  
+}
+```
+
+```{r}
+topic_words <- function(term_mat, terms){
+  # Your code goes here
+  data.frame(t(term_mat)) %>%
+    mutate(term = terms) %>%
+    gather(topic, val, -term) %>%
+    group_by(topic) %>%
+    arrange(-val) %>%
+    summarise(most_positive = paste(head(term), collapse = ', '),
+              least_negative = paste(tail(term), collapse = ', '),
+              topic_name = paste(head(term, 3), collapse='_'))
+}
+```
+```{r}
+topic_descriptions <- function(term_mat, doc_mat, terms, headlines){
+  # Your code goes here
+  term_df <- topic_words(term_mat, terms)
+  doc_df <- topic_articles(doc_mat, headlines)
+  merge(term_df, doc_df, by='topic', suffixes = c('_terms', '_articles'))
+}
+topics_df <- topic_descriptions(lda_out@beta, lda_out@gamma, Terms(dtm_train_1), articles_split$train_1$headline)
+pander(topics_df, split.table=Inf)
+```
+
+Topic Distributions:
+```{r}
+pltdf <- data.frame(lda_out@gamma) %>% gather(topic, val)
+p <- ggplot(pltdf, aes(x=val)) +
+  geom_histogram(bins=50) +
+  theme_bw() +
+  scale_x_log10() +
+  facet_wrap(~topic)
+print(p)
+```
+
+Histogram of number of zero loadings per document:
+
+```{r}
+zero_counts <- apply(lda_out@gamma, 1, FUN = function(row) sum(row < .01))
+hist(zero_counts, no_of_topics)
+```
+### Q10: _Apply_ your topic model to the Train_2 datset. You may have to play around with the documentation to figure out how to do this. Hint: You want to calculate posterior probabilities for a new set of documents...
+
+```{r}
+corp_train_2 <- SimpleCorpus(VectorSource(articles_split$train_2$content)) %>%
+  tm_map(stripWhitespace) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removeWords, stopwords('english')) %>%
+  tm_map(stemDocument)
+dtm_train_2 = DocumentTermMatrix(corp_train_2, control = list(weight='weightTfidf', bounds = list(global = c(20, 100))))
+
+# Remove documents that don't contain any of these words.
+idx <- apply(dtm_train_2, 1, sum) >= 1
+articles_split$train_2 <- articles_split$train_2[idx, ]
+dtm_train_2 <- dtm_train_2[idx, ]
+dim(dtm_train_2)
+#Terms(dtm_train_2)
+
+## Run the Model for New Data
+lda_model_train_2 = topicmodels::LDA(dtm_train_2, k = no_of_topics, model = lda_out)
+topic_mat_train_2 = topicmodels::posterior(lda_model_train_2, dtm_train_2)
+#topic_mat_train_2[["topics"]]
+#topic_mat_train_2
+
+top_terms <- function(term_mat, terms){
+  data.frame(t(term_mat)) %>%
+    mutate(term = terms) %>%
+    gather(topic, val, -term) %>%
+    group_by(topic) %>%
+    arrange(-val) %>%
+    summarise(most_associated = paste(head(term), collapse = ', '),
+              topic_name = paste(head(term, 3), collapse='_'))
+}
+lda_names <- top_terms(lda_model_train_2@beta, Terms(dtm_train_1))$topic_name
+head(lda_names)
+lda_df_train2 <- data.frame(section = articles_split$train_2$section_name == 'Sports', lda_model_train_2@gamma) %>% setNames(c('section', lda_names))
+factor_vars <- c('section')
+lda_df_train2[factor_vars] <- lapply(lda_df_train2[factor_vars], function(x) as.factor(x))
+lda_df_train2$section <- factor(lda_df_train2$section, levels = c("FALSE","TRUE"), labels = c(0,1))
+nrow(lda_df_train2)
+head(lda_df_train2, n=10L)
+
+```
+
+### Q11: Train a logistic regression model on the topics extracted from the Train_2. That is, you are trying to model the probability that a given article is from the sports section, given the loadings on the topics you found in Q10.
+
+```{r}
+glm_model_train_2 = glm(section ~ ., lda_df_train2, family='binomial')
+```
+
+
+### Q12: Test the performance of your model on the Test set. You will have to apply the topic model before you can apply the logistic regression model. You can use the following function to help you evaluate the results.
+```{r}
+require(ROCR)
+roc <- function(predicted, actual, key='None'){
+  # Prediction object
+  pred = prediction(predicted, actual)
+
+  # ROC Curve
+  perf <- performance(pred, measure = 'tpr', x.measure = 'fpr')
+  plot(perf,col="black",lty=3, lwd=3)
+  roc <- data.frame(perf@alpha.values,
+                    perf@x.values,
+                    perf@y.values)
+  colnames(roc) <- c('Threshold', 'FPR', 'TPR')
+  roc$key <- key
+
+  # Area under the curve
+  perf <- performance(pred, measure = 'auc')
+  auc <- perf@y.values
+
+  list(roc=roc, auc=auc)
+}
+
+corp_test <- SimpleCorpus(VectorSource(articles_split$test$content)) %>%
+  tm_map(stripWhitespace) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removeWords, stopwords('english')) %>%
+  tm_map(stemDocument)
+dtm_test = DocumentTermMatrix(corp_test, control = list(weight='weightTfidf', bounds = list(global = c(20, 100))))
+
+# Remove documents that don't contain any of these words.
+idx <- apply(dtm_test, 1, sum) >= 1
+articles_split$test <- articles_split$test[idx, ]
+dtm_test <- dtm_test[idx, ]
+dim(dtm_test)
+#Terms(dtm_train_2)
+
+## Run the Model for New Data
+lda_model_test = topicmodels::LDA(dtm_test, k = no_of_topics, model = lda_out)
+topic_mat_test = topicmodels::posterior(lda_model_test, dtm_test)
+
+lda_df_test <- data.frame(lda_model_test@gamma) %>% setNames(c(lda_names))
+nrow(lda_df_test)
+head(lda_df_test, n=10L)
+
+lda_predictions <- predict(glm_model_train_2, newdata = lda_df_test, type='response')
+lda_predictions
+roc(lda_predictions, data.frame(articles_split$test$section_name == 'Sports'))
+````
+
+### Q13: What are your observations?
+### ANS: The AUC is differs from execution to execution so are the topics.
+
+
+
+### Q14 : Final Project Time!
+
+Write up a paragraph or two on what your final project will be.  Answer these questions:
+
+Write up:
+The main of the project is to detect fradulent credit card transcation(s).
+I am trying to binary classify the data into genuine and fradulent transaction(s).
+https://www.kaggle.com/dalpozz/creditcardfraud
+The ratio of genuine to fradulent data is higlhy imbalanced.
+Given the class imbalance ratio, we recommend measuring the accuracy using the Area Under the Precision-Recall Curve (AUPRC). Confusion matrix accuracy is not meaningful for unbalanced classification.
+
+
+1. What data are you using?
+Credit Card Fraud Detection
+https://www.kaggle.com/dalpozz/creditcardfraud/downloads/creditcardfraud.zip
+The datasets contains transactions made by credit cards in September 2013 by european cardholders. This dataset presents transactions that occurred in two days, where we have 492 frauds out of 284,807 transactions. The dataset is highly unbalanced, the positive class (frauds) account for 0.172% of all transactions. 
+It contains only numerical input variables which are the result of a PCA transformation.Features V1, V2, ... V28 are the principal components obtained with PCA, the only features which have not been transformed with PCA are 'Time' and 'Amount'. Feature 'Time' contains the seconds elapsed between each transaction and the first transaction in the dataset. The feature 'Amount' is the transaction Amount, this feature can be used for example-dependant cost-senstive learning. Feature 'Class' is the response variable and it takes value 1 in case of fraud and 0 otherwise.
+
+
+2. What techniques are you using?
+SMOTE - Synthetic Minority Over-sampling Technique.
+ROSE -  Random Over-Sampling Examples.
+
+
+
+3. Do you plan on doing any data cleaning/preparation? (If so, what?)
+Yes,  Data preparaton, Balance the data using SMOTE and ROSE and then compare
+
+
+
+4. Are you going to perform supervised or unsupervised learning? (And which technique(s)?)
+Supervised:
+RandomForest and 
+Gradient Boosting (xgBoost)
+
+
+
+
